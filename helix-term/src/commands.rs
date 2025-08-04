@@ -38,7 +38,8 @@ use helix_core::{
     search::{self, CharMatcher},
     selection, surround,
     syntax::{
-        self,
+        Loader,
+        // self,
         config::{BlockCommentToken, LanguageServerFeature},
     },
     text_annotations::{Overlay, TextAnnotations},
@@ -5621,7 +5622,7 @@ type CommentTransaction = fn(
     doc_line_token: Option<&str>,
     doc_block_tokens: Option<&[BlockCommentToken]>,
     syntax: Option<&Syntax>,
-    loader: &syntax::Loader,
+    loader: &Loader,
 ) -> Transaction;
 
 /// Commenting behavior, for each range in selection:
