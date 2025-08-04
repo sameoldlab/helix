@@ -104,4 +104,4 @@ branches = []
 #
 # patches = [ "my-patch123", "another-patch", "1234" ]
 
-# patches = []
+patches = ["merge-12204"]
