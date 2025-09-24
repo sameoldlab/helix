@@ -53,15 +53,11 @@ local-branch = "patchy"
 # ]
 
 pull-requests = [
-  '12204',
-  '12759',
-  '13133',
-  '12902',
-  '12043',
-  # differentiate buffers with same name
-  # '13113' 
-  # add local search in buffer
-  '13053',
+  # '12204', merge-commit
+  # '12759', merge-commit
+  # '13133', merge-commit
+  # '12902', merge-commit
+  # '13113', #differentiate buffers with same name
 ]
 
 # List of branches from other repositories to merge into the repository
@@ -104,4 +100,9 @@ branches = []
 #
 # patches = [ "my-patch123", "another-patch", "1234" ]
 
-patches = ["merge-12204", "merge-13133"]
+patches = [
+ "merge-12204", # merge status and commandline
+ "merge-13133", # git blame
+ "merge-12902", # powerful file explorer
+ "merge-12759", # determine comment tokens
+]
