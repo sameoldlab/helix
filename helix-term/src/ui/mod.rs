@@ -1,6 +1,7 @@
 mod completion;
 mod document;
 pub(crate) mod editor;
+mod file_explorer;
 mod info;
 pub mod lsp;
 mod markdown;
@@ -19,6 +20,7 @@ use crate::filter_picker_entry;
 use crate::job::{self, Callback};
 pub use completion::Completion;
 pub use editor::EditorView;
+pub use file_explorer::file_explorer;
 use helix_stdx::rope;
 use helix_view::theme::Style;
 pub use markdown::Markdown;
@@ -308,7 +310,7 @@ type FileExplorer = Picker<(PathBuf, bool), (PathBuf, Style)>;
 
 pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std::io::Error> {
     let directory_style = editor.theme.get("ui.text.directory");
-    let directory_content = directory_content(&root, editor)?;
+    let directory_content = directory_content(&root)?;
 
     let columns = [PickerColumn::new(
         "path",
@@ -354,42 +356,14 @@ pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std
     Ok(picker)
 }
 
-fn directory_content(root: &Path, editor: &Editor) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
-    use ignore::WalkBuilder;
-
-    let config = editor.config();
-
-    let mut walk_builder = WalkBuilder::new(root);
-
-    let mut content: Vec<(PathBuf, bool)> = walk_builder
-        .hidden(config.file_explorer.hidden)
-        .parents(config.file_explorer.parents)
-        .ignore(config.file_explorer.ignore)
-        .follow_links(config.file_explorer.follow_symlinks)
-        .git_ignore(config.file_explorer.git_ignore)
-        .git_global(config.file_explorer.git_global)
-        .git_exclude(config.file_explorer.git_exclude)
-        .max_depth(Some(1))
-        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-        .add_custom_ignore_filename(".helix/ignore")
-        .types(get_excluded_types())
-        .build()
-        .filter_map(|entry| {
-            entry
-                .map(|entry| {
-                    let is_dir = entry
-                        .file_type()
-                        .is_some_and(|file_type| file_type.is_dir());
-                    let mut path = entry.path().to_path_buf();
-                    if is_dir && path != root && config.file_explorer.flatten_dirs {
-                        while let Some(single_child_directory) = get_child_if_single_dir(&path) {
-                            path = single_child_directory;
-                        }
-                    }
-                    (path, is_dir)
-                })
-                .ok()
-                .filter(|entry| entry.0 != root)
+fn directory_content(path: &Path) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
+    let mut content: Vec<_> = std::fs::read_dir(path)?
+        .flatten()
+        .map(|entry| {
+            (
+                entry.path(),
+                entry.file_type().is_ok_and(|file_type| file_type.is_dir()),
+            )
         })
         .collect();
 
