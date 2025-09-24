@@ -1,0 +1,2014 @@
+From 6a6f0de57405a707bd47879e55acad71e9056c5a Mon Sep 17 00:00:00 2001
+From: ibro <sameoldlab@proton.me>
+Date: Mon, 4 Aug 2025 23:07:10 +0100
+Subject: [PATCH] merge branch 13133/gix-blame
+
+---
+ Cargo.lock                                  |  32 +
+ book/src/editor.md                          |  34 ++
+ book/src/generated/static-cmd.md            |   1 +
+ book/src/keymap.md                          |   1 +
+ book/src/themes.md                          |   1 +
+ helix-stdx/src/lib.rs                       |   2 +
+ helix-stdx/src/str.rs                       |  18 +
+ helix-stdx/src/time.rs                      |  75 +++
+ helix-term/src/application.rs               |   5 +
+ helix-term/src/commands.rs                  |  51 ++
+ helix-term/src/commands/typed.rs            |  34 ++
+ helix-term/src/events.rs                    |   5 +-
+ helix-term/src/handlers.rs                  |   5 +
+ helix-term/src/handlers/blame.rs            |  98 +++
+ helix-term/src/keymap/default.rs            |   1 +
+ helix-term/src/ui/document.rs               |   8 +
+ helix-term/src/ui/editor.rs                 |  61 +-
+ helix-term/src/ui/text_decorations.rs       |   1 +
+ helix-term/src/ui/text_decorations/blame.rs |  95 +++
+ helix-vcs/Cargo.toml                        |   3 +-
+ helix-vcs/src/diff.rs                       |   7 +
+ helix-vcs/src/git.rs                        |   4 +-
+ helix-vcs/src/git/blame.rs                  | 630 ++++++++++++++++++++
+ helix-vcs/src/git/test.rs                   |  26 +-
+ helix-vcs/src/lib.rs                        |   7 +-
+ helix-view/src/document.rs                  |  88 ++-
+ helix-view/src/editor.rs                    |  39 ++
+ helix-view/src/events.rs                    |   7 +-
+ helix-view/src/handlers.rs                  |  12 +
+ helix-view/src/view.rs                      |  12 +
+ 30 files changed, 1342 insertions(+), 21 deletions(-)
+ create mode 100644 helix-stdx/src/str.rs
+ create mode 100644 helix-stdx/src/time.rs
+ create mode 100644 helix-term/src/handlers/blame.rs
+ create mode 100644 helix-term/src/ui/text_decorations/blame.rs
+ create mode 100644 helix-vcs/src/git/blame.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 1c3e54fa3..a38aaf243 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -222,6 +222,15 @@ dependencies = [
+  "cfg-if",
+ ]
+ 
++[[package]]
++name = "crossbeam-channel"
++version = "0.5.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
++dependencies = [
++ "crossbeam-utils",
++]
++
+ [[package]]
+ name = "crossbeam-deque"
+ version = "0.8.5"
+@@ -552,6 +561,7 @@ checksum = "514c29cc879bdc0286b0cbc205585a49b252809eb86c69df4ce4f855ee75f635"
+ dependencies = [
+  "gix-actor",
+  "gix-attributes",
++ "gix-blame",
+  "gix-command",
+  "gix-commitgraph",
+  "gix-config",
+@@ -634,6 +644,25 @@ dependencies = [
+  "thiserror 2.0.12",
+ ]
+ 
++[[package]]
++name = "gix-blame"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f33ae48a0d557084199b25441745d44a3f8d0bdaa0e60f534aec305abd3b63dc"
++dependencies = [
++ "gix-commitgraph",
++ "gix-date",
++ "gix-diff",
++ "gix-hash",
++ "gix-object",
++ "gix-revwalk",
++ "gix-trace",
++ "gix-traverse",
++ "gix-worktree",
++ "smallvec",
++ "thiserror 2.0.12",
++]
++
+ [[package]]
+ name = "gix-chunk"
+ version = "0.4.11"
+@@ -783,12 +812,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9a92748623c201568785ee69a561f4eec06f745b4fac67dab1d44ca9891a57ee"
+ dependencies = [
+  "crc32fast",
++ "crossbeam-channel",
+  "flate2",
+  "gix-path",
+  "gix-trace",
+  "gix-utils",
+  "libc",
+  "once_cell",
++ "parking_lot",
+  "prodash",
+  "thiserror 2.0.12",
+  "walkdir",
+@@ -1593,6 +1624,7 @@ dependencies = [
+  "gix",
+  "helix-core",
+  "helix-event",
++ "helix-stdx",
+  "imara-diff 0.2.0",
+  "log",
+  "parking_lot",
+diff --git a/book/src/editor.md b/book/src/editor.md
+index 2abacc6bc..06b068ae1 100644
+--- a/book/src/editor.md
++++ b/book/src/editor.md
+@@ -4,6 +4,7 @@ ## Editor
+ - [`[editor.clipboard-provider]` Section](#editorclipboard-provider-section)
+ - [`[editor.statusline]` Section](#editorstatusline-section)
+ - [`[editor.lsp]` Section](#editorlsp-section)
++- [`[editor.inline-blame]` Section](#editorinlineblame-section)
+ - [`[editor.cursor-shape]` Section](#editorcursor-shape-section)
+ - [`[editor.file-picker]` Section](#editorfile-picker-section)
+ - [`[editor.auto-pairs]` Section](#editorauto-pairs-section)
+@@ -172,6 +173,39 @@ ### `[editor.lsp]` Section
+ 
+ [^2]: You may also have to activate them in the language server config for them to appear, not just in Helix. Inlay hints in Helix are still being improved on and may be a little bit laggy/janky under some circumstances. Please report any bugs you see so we can fix them!
+ 
++### `[editor.inline-blame]` Section
++
++Inline blame is virtual text that appears at the end of a line, displaying information about the most recent commit that affected this line.
++
++| Key     | Description                                | Default |
++| ------- | ------------------------------------------ | ------- |
++| `show` | When to show inline blame | `"never"` |
++| `auto-fetch` | Automatically fetch blame information in the background | `false` |
++| `format` | Inline blame message format | `"{author}, {time-ago} • {title} • {commit}"` |
++
++`show` can be one of the following:
++- `"all-lines"`: Inline blame is on every line.
++- `"cursor-line"`: Inline blame is only on the line of the primary cursor.
++- `"hidden"`: Inline blame is hidden.
++
++With `auto-fetch` set to `false`, blame for the current file is fetched only when explicitly requested, such as when using `space + B` to display the blame for the line of the cursor. There may be a little delay when loading the blame.
++
++When `auto-fetch` is set to `true`, blame for the file is fetched in the background; this will have no effect on performance, but will use a little bit extra resources in the background. Directly requesting the blame with `space + B` will be instant. Inline blame will show as soon as the blame is available when loading new files.
++
++When opening new files, even with `show` set to `"all-lines"` or `"cursor-line"`, the inline blame won't show. It needs to be fetched first in order to become available, which can be triggered manually with `space + B`.
++
++#### `format`
++
++Change the `format` string to customize the blame message displayed. Variables are text placeholders wrapped in curly braces: `{variable}`. The following variables are available:
++
++- `author`: The author of the commit
++- `date`: When the commit was made
++- `time-ago`: How long ago the commit was made
++- `title`: The title of the commit
++- `body`: The body of the commit
++- `commit`: The short hex SHA1 hash of the commit
++- `email`: The email of the author of the commit
++
+ ### `[editor.cursor-shape]` Section
+ 
+ Defines the shape of cursor in each mode.
+diff --git a/book/src/generated/static-cmd.md b/book/src/generated/static-cmd.md
+index 43754bde1..ce579966d 100644
+--- a/book/src/generated/static-cmd.md
++++ b/book/src/generated/static-cmd.md
+@@ -319,5 +319,6 @@
+ | `extend_to_word` | Extend to a two-character label | select: `` gw `` |
+ | `goto_next_tabstop` | Goto next snippet placeholder |  |
+ | `goto_prev_tabstop` | Goto next snippet placeholder |  |
++| `blame_line` | Show blame for the current line | normal: `` <space>B ``, select: `` <space>B `` |
+ | `rotate_selections_first` | Make the first selection your primary one |  |
+ | `rotate_selections_last` | Make the last selection your primary one |  |
+diff --git a/book/src/keymap.md b/book/src/keymap.md
+index 32747e6ad..4e4c1a552 100644
+--- a/book/src/keymap.md
++++ b/book/src/keymap.md
+@@ -334,6 +334,7 @@ #### Space mode
+ | `R`     | Replace selections by clipboard contents                                | `replace_selections_with_clipboard`        |
+ | `/`     | Global search in workspace folder                                       | `global_search`                            |
+ | `?`     | Open command palette                                                    | `command_palette`                          |
++| `B`     | Show blame for the current line                                         | `blame_line`                             |
+ 
+ > 💡 Global search displays results in a fuzzy picker, use `Space + '` to bring it back up after opening a file.
+ 
+diff --git a/book/src/themes.md b/book/src/themes.md
+index 8140120bc..7541289a0 100644
+--- a/book/src/themes.md
++++ b/book/src/themes.md
+@@ -327,6 +327,7 @@ #### Interface
+ | `ui.virtual.inlay-hint.type`      | Style for inlay hints of kind `type` (language servers are not required to set a kind)         |
+ | `ui.virtual.wrap`                 | Soft-wrap indicator (see the [`editor.soft-wrap` config][editor-section])                      |
+ | `ui.virtual.jump-label`           | Style for virtual jump labels                                                                  |
++| `ui.virtual.inline-blame`         | Inline blame indicator (see the [`editor.inline-blame` config][editor-section])                |
+ | `ui.menu`                         | Code and command completion menus                                                              |
+ | `ui.menu.selected`                | Selected autocomplete item                                                                     |
+ | `ui.menu.scroll`                  | `fg` sets thumb color, `bg` sets track color of scrollbar                                      |
+diff --git a/helix-stdx/src/lib.rs b/helix-stdx/src/lib.rs
+index e371f3920..143d141df 100644
+--- a/helix-stdx/src/lib.rs
++++ b/helix-stdx/src/lib.rs
+@@ -6,5 +6,7 @@
+ pub mod path;
+ pub mod range;
+ pub mod rope;
++pub mod str;
++pub mod time;
+ 
+ pub use range::Range;
+diff --git a/helix-stdx/src/str.rs b/helix-stdx/src/str.rs
+new file mode 100644
+index 000000000..942acea95
+--- /dev/null
++++ b/helix-stdx/src/str.rs
+@@ -0,0 +1,18 @@
++/// Concatenates strings together.
++///
++/// `str_concat!(a, " ", b, " ", c)` is:
++/// - more performant than `format!("{a} {b} {c}")`
++/// - more ergonomic than using `String::with_capacity` followed by a series of `String::push_str`
++#[macro_export]
++macro_rules! str_concat {
++    ($($value:expr),*) => {{
++        // Rust does not allow using `+` as separator between value
++        // so we must add that at the end of everything. The `0` is necessary
++        // at the end so it does not end with "+ " (which would be invalid syntax)
++        let mut buf = String::with_capacity($($value.len() + )* 0);
++        $(
++            buf.push_str(&$value);
++        )*
++        buf
++    }}
++}
+diff --git a/helix-stdx/src/time.rs b/helix-stdx/src/time.rs
+new file mode 100644
+index 000000000..08a45988c
+--- /dev/null
++++ b/helix-stdx/src/time.rs
+@@ -0,0 +1,75 @@
++use std::time::{Instant, SystemTime};
++
++use once_cell::sync::Lazy;
++
++const SECOND: i64 = 1;
++const MINUTE: i64 = 60 * SECOND;
++const HOUR: i64 = 60 * MINUTE;
++const DAY: i64 = 24 * HOUR;
++const MONTH: i64 = 30 * DAY;
++const YEAR: i64 = 365 * DAY;
++
++/// Like `std::time::SystemTime::now()` but does not cause a syscall on every invocation.
++///
++/// There is just one syscall at the start of the program, subsequent invocations are
++/// much cheaper and use the monotonic clock instead of trigerring a syscall.
++#[inline]
++fn now() -> SystemTime {
++    static START_INSTANT: Lazy<Instant> = Lazy::new(Instant::now);
++    static START_SYSTEM_TIME: Lazy<SystemTime> = Lazy::new(SystemTime::now);
++
++    *START_SYSTEM_TIME + START_INSTANT.elapsed()
++}
++
++/// Formats a timestamp into a human-readable relative time string.
++///
++/// # Arguments
++///
++/// * `timestamp` - A point in history. Seconds since UNIX epoch (UTC)
++/// * `timezone_offset` - Timezone offset in seconds
++///
++/// # Returns
++///
++/// A String representing the relative time (e.g., "4 years ago", "11 months from now")
++#[inline]
++pub fn format_relative_time(timestamp: i64, timezone_offset: i32) -> String {
++    let timestamp = timestamp + timezone_offset as i64;
++    let now = now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_secs() as i64
++        + timezone_offset as i64;
++
++    let time_passed = now - timestamp;
++
++    let time_difference = time_passed.abs();
++
++    let (value, unit) = if time_difference >= YEAR {
++        let years = time_difference / YEAR;
++        (years, if years == 1 { "year" } else { "years" })
++    } else if time_difference >= MONTH {
++        let months = time_difference / MONTH;
++        (months, if months == 1 { "month" } else { "months" })
++    } else if time_difference >= DAY {
++        let days = time_difference / DAY;
++        (days, if days == 1 { "day" } else { "days" })
++    } else if time_difference >= HOUR {
++        let hours = time_difference / HOUR;
++        (hours, if hours == 1 { "hour" } else { "hours" })
++    } else if time_difference >= MINUTE {
++        let minutes = time_difference / MINUTE;
++        (minutes, if minutes == 1 { "minute" } else { "minutes" })
++    } else {
++        let seconds = time_difference / SECOND;
++        (seconds, if seconds == 1 { "second" } else { "seconds" })
++    };
++    let value = value.to_string();
++
++    let label = if time_passed.is_positive() {
++        "ago"
++    } else {
++        "from now"
++    };
++
++    crate::str_concat!(value, " ", unit, " ", label)
++}
+diff --git a/helix-term/src/application.rs b/helix-term/src/application.rs
+index cf09aac0d..ada340139 100644
+--- a/helix-term/src/application.rs
++++ b/helix-term/src/application.rs
+@@ -11,6 +11,7 @@
+     align_view,
+     document::{DocumentOpenError, DocumentSavedEventResult},
+     editor::{ConfigEvent, EditorEvent},
++    events::EditorConfigDidChange,
+     graphics::Rect,
+     theme,
+     tree::Layout,
+@@ -366,6 +367,10 @@ pub fn handle_config_events(&mut self, config_event: ConfigEvent) {
+             // the Application can apply it.
+             ConfigEvent::Update(editor_config) => {
+                 let mut app_config = (*self.config.load().clone()).clone();
++                helix_event::dispatch(EditorConfigDidChange {
++                    old_config: &app_config.editor,
++                    editor: &mut self.editor,
++                });
+                 app_config.editor = *editor_config;
+                 if let Err(err) = self.terminal.reconfigure(app_config.editor.clone().into()) {
+                     self.editor.set_error(err.to_string());
+diff --git a/helix-term/src/commands.rs b/helix-term/src/commands.rs
+index d9ec59315..4a2270ea3 100644
+--- a/helix-term/src/commands.rs
++++ b/helix-term/src/commands.rs
+@@ -11,6 +11,7 @@
+     rope::{self, RopeSliceExt},
+ };
+ use helix_vcs::{FileChange, Hunk};
++use helix_view::document::LineBlameError;
+ pub use lsp::*;
+ pub use syntax::*;
+ use tui::{
+@@ -623,6 +624,7 @@ pub fn doc(&self) -> &str {
+         extend_to_word, "Extend to a two-character label",
+         goto_next_tabstop, "Goto next snippet placeholder",
+         goto_prev_tabstop, "Goto next snippet placeholder",
++        blame_line, "Show blame for the current line",
+         rotate_selections_first, "Make the first selection your primary one",
+         rotate_selections_last, "Make the last selection your primary one",
+     );
+@@ -3886,6 +3888,55 @@ fn insert_at_line_start(cx: &mut Context) {
+     insert_with_indent(cx, IndentFallbackPos::LineStart);
+ }
+ 
++pub(crate) fn blame_line_impl(editor: &mut Editor, doc_id: DocumentId, cursor_line: u32) {
++    let inline_blame_config = &editor.config().inline_blame;
++    let Some(doc) = editor.document(doc_id) else {
++        return;
++    };
++    let line_blame = match doc.line_blame(cursor_line, &inline_blame_config.format) {
++        result
++            if (result.is_ok() && doc.is_blame_potentially_out_of_date)
++                || matches!(result, Err(LineBlameError::NotReadyYet) if !inline_blame_config.auto_fetch) =>
++        {
++            if let Some(path) = doc.path() {
++                let tx = editor.handlers.blame.clone();
++                helix_event::send_blocking(
++                    &tx,
++                    helix_view::handlers::BlameEvent {
++                        path: path.to_path_buf(),
++                        doc_id: doc.id(),
++                        line: Some(cursor_line),
++                    },
++                );
++                editor.set_status(format!("Requested blame for {}...", path.display()));
++                let doc = editor
++                    .document_mut(doc_id)
++                    .expect("exists since we return from the function earlier if it does not");
++                doc.is_blame_potentially_out_of_date = false;
++            } else {
++                editor.set_error("Could not get path of document");
++            };
++            return;
++        }
++        Ok(line_blame) => line_blame,
++        Err(err @ (LineBlameError::NotCommittedYet | LineBlameError::NotReadyYet)) => {
++            editor.set_status(err.to_string());
++            return;
++        }
++        Err(err @ LineBlameError::NoFileBlame(_, _)) => {
++            editor.set_error(err.to_string());
++            return;
++        }
++    };
++
++    editor.set_status(line_blame);
++}
++
++fn blame_line(cx: &mut Context) {
++    let (view, doc) = current_ref!(cx.editor);
++    blame_line_impl(cx.editor, doc.id(), doc.cursor_line(view.id) as u32);
++}
++
+ // `A` inserts at the end of each line with a selection.
+ // If the line is empty, automatically indent.
+ fn insert_at_line_end(cx: &mut Context) {
+diff --git a/helix-term/src/commands/typed.rs b/helix-term/src/commands/typed.rs
+index 16f3c70d4..14b2e24cd 100644
+--- a/helix-term/src/commands/typed.rs
++++ b/helix-term/src/commands/typed.rs
+@@ -14,6 +14,7 @@
+ use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
+ use helix_view::editor::{CloseError, ConfigEvent};
+ use helix_view::expansion;
++use helix_view::handlers::BlameEvent;
+ use serde_json::Value;
+ use ui::completers::{self, Completer};
+ 
+@@ -1393,16 +1394,33 @@ fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
+     }
+ 
+     let scrolloff = cx.editor.config().scrolloff;
++    let auto_fetch = cx.editor.config().inline_blame.auto_fetch;
+     let (view, doc) = current!(cx.editor);
+     doc.reload(view, &cx.editor.diff_providers).map(|_| {
+         view.ensure_cursor_in_view(doc, scrolloff);
+     })?;
++    let doc_id = doc.id();
+     if let Some(path) = doc.path() {
+         cx.editor
+             .language_servers
+             .file_event_handler
+             .file_changed(path.clone());
+     }
++
++    if doc.should_request_full_file_blame(auto_fetch) {
++        if let Some(path) = doc.path() {
++            helix_event::send_blocking(
++                &cx.editor.handlers.blame,
++                BlameEvent {
++                    path: path.to_path_buf(),
++                    doc_id,
++                    line: None,
++                },
++            );
++        }
++    }
++    doc.is_blame_potentially_out_of_date = true;
++
+     Ok(())
+ }
+ 
+@@ -1429,6 +1447,8 @@ fn reload_all(cx: &mut compositor::Context, _args: Args, event: PromptEvent) ->
+         })
+         .collect();
+ 
++    let blame_compute = cx.editor.config().inline_blame.auto_fetch;
++
+     for (doc_id, view_ids) in docs_view_ids {
+         let doc = doc_mut!(cx.editor, &doc_id);
+ 
+@@ -1456,6 +1476,20 @@ fn reload_all(cx: &mut compositor::Context, _args: Args, event: PromptEvent) ->
+                 view.ensure_cursor_in_view(doc, scrolloff);
+             }
+         }
++
++        if doc.should_request_full_file_blame(blame_compute) {
++            if let Some(path) = doc.path() {
++                helix_event::send_blocking(
++                    &cx.editor.handlers.blame,
++                    BlameEvent {
++                        path: path.to_path_buf(),
++                        doc_id,
++                        line: None,
++                    },
++                );
++            }
++        }
++        doc.is_blame_potentially_out_of_date = true;
+     }
+ 
+     Ok(())
+diff --git a/helix-term/src/events.rs b/helix-term/src/events.rs
+index b0a422989..5e730a2ff 100644
+--- a/helix-term/src/events.rs
++++ b/helix-term/src/events.rs
+@@ -1,8 +1,8 @@
+ use helix_event::{events, register_event};
+ use helix_view::document::Mode;
+ use helix_view::events::{
+-    ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
+-    DocumentFocusLost, LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
++    ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen, DocumentFocusLost,
++    EditorConfigDidChange, LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
+ };
+ 
+ use crate::commands;
+@@ -20,6 +20,7 @@ pub fn register() {
+     register_event::<PostCommand>();
+     register_event::<DocumentDidOpen>();
+     register_event::<DocumentDidChange>();
++    register_event::<EditorConfigDidChange>();
+     register_event::<DocumentDidClose>();
+     register_event::<DocumentFocusLost>();
+     register_event::<SelectionDidChange>();
+diff --git a/helix-term/src/handlers.rs b/helix-term/src/handlers.rs
+index 9c46a6503..3001ce706 100644
+--- a/helix-term/src/handlers.rs
++++ b/helix-term/src/handlers.rs
+@@ -10,9 +10,11 @@
+ 
+ pub use helix_view::handlers::{word_index, Handlers};
+ 
++use self::blame::BlameHandler;
+ use self::document_colors::DocumentColorsHandler;
+ 
+ mod auto_save;
++pub mod blame;
+ pub mod completion;
+ mod diagnostics;
+ mod document_colors;
+@@ -27,6 +29,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
+     let auto_save = AutoSaveHandler::new().spawn();
+     let document_colors = DocumentColorsHandler::default().spawn();
+     let word_index = word_index::Handler::spawn();
++    let blame = BlameHandler::default().spawn();
+ 
+     let handlers = Handlers {
+         completions: helix_view::handlers::completion::CompletionHandler::new(event_tx),
+@@ -34,6 +37,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
+         auto_save,
+         document_colors,
+         word_index,
++        blame,
+     };
+ 
+     helix_view::handlers::register_hooks(&handlers);
+@@ -43,5 +47,6 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
+     diagnostics::register_hooks(&handlers);
+     snippet::register_hooks(&handlers);
+     document_colors::register_hooks(&handlers);
++    blame::register_hooks(&handlers);
+     handlers
+ }
+diff --git a/helix-term/src/handlers/blame.rs b/helix-term/src/handlers/blame.rs
+new file mode 100644
+index 000000000..309b26aee
+--- /dev/null
++++ b/helix-term/src/handlers/blame.rs
+@@ -0,0 +1,98 @@
++use std::{mem, time::Duration};
++
++use helix_event::register_hook;
++use helix_vcs::FileBlame;
++use helix_view::{
++    events::{DocumentDidOpen, EditorConfigDidChange},
++    handlers::{BlameEvent, Handlers},
++    DocumentId,
++};
++use tokio::time::Instant;
++
++use crate::job;
++
++#[derive(Default)]
++pub struct BlameHandler {
++    file_blame: Option<anyhow::Result<FileBlame>>,
++    doc_id: DocumentId,
++    show_blame_for_line_in_statusline: Option<u32>,
++}
++
++impl helix_event::AsyncHook for BlameHandler {
++    type Event = BlameEvent;
++
++    fn handle_event(
++        &mut self,
++        event: Self::Event,
++        _timeout: Option<tokio::time::Instant>,
++    ) -> Option<tokio::time::Instant> {
++        self.doc_id = event.doc_id;
++        self.show_blame_for_line_in_statusline = event.line;
++        self.file_blame = Some(FileBlame::try_new(event.path));
++        Some(Instant::now() + Duration::from_millis(50))
++    }
++
++    fn finish_debounce(&mut self) {
++        let doc_id = self.doc_id;
++        let line_blame = self.show_blame_for_line_in_statusline;
++        let result = mem::take(&mut self.file_blame);
++        if let Some(result) = result {
++            tokio::spawn(async move {
++                job::dispatch(move |editor, _| {
++                    let Some(doc) = editor.document_mut(doc_id) else {
++                        return;
++                    };
++                    doc.file_blame = Some(result);
++                    if !editor.config().inline_blame.auto_fetch {
++                        if let Some(line) = line_blame {
++                            crate::commands::blame_line_impl(editor, doc_id, line);
++                        } else {
++                            editor.set_status("Blame for this file is now available")
++                        }
++                    }
++                })
++                .await;
++            });
++        }
++    }
++}
++
++pub(super) fn register_hooks(handlers: &Handlers) {
++    let tx = handlers.blame.clone();
++    register_hook!(move |event: &mut DocumentDidOpen<'_>| {
++        if event.editor.config().inline_blame.auto_fetch {
++            helix_event::send_blocking(
++                &tx,
++                BlameEvent {
++                    path: event.path.to_path_buf(),
++                    doc_id: event.doc,
++                    line: None,
++                },
++            );
++        }
++        Ok(())
++    });
++    let tx = handlers.blame.clone();
++    register_hook!(move |event: &mut EditorConfigDidChange<'_>| {
++        let has_enabled_inline_blame = !event.old_config.inline_blame.auto_fetch
++            && event.editor.config().inline_blame.auto_fetch;
++
++        if has_enabled_inline_blame {
++            // request blame for all documents, since any of them could have
++            // outdated blame
++            for doc in event.editor.documents() {
++                if let Some(path) = doc.path() {
++                    helix_event::send_blocking(
++                        &tx,
++                        BlameEvent {
++                            path: path.to_path_buf(),
++                            doc_id: doc.id(),
++                            line: None,
++                        },
++                    );
++                }
++            }
++        }
++        Ok(())
++    });
++}
+diff --git a/helix-term/src/keymap/default.rs b/helix-term/src/keymap/default.rs
+index 790891270..003469026 100644
+--- a/helix-term/src/keymap/default.rs
++++ b/helix-term/src/keymap/default.rs
+@@ -303,6 +303,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
+             "C" => toggle_block_comments,
+             "A-c" => toggle_line_comments,
+             "?" => command_palette,
++            "B" => blame_line,
+         },
+         "z" => { "View"
+             "z" | "c" => align_view_center,
+diff --git a/helix-term/src/ui/document.rs b/helix-term/src/ui/document.rs
+index 524d829c4..2d2d77b32 100644
+--- a/helix-term/src/ui/document.rs
++++ b/helix-term/src/ui/document.rs
+@@ -25,6 +25,8 @@ pub struct LinePos {
+     pub doc_line: usize,
+     /// Vertical offset from the top of the inner view area
+     pub visual_line: u16,
++    /// The given visual line is the last visual line of the document line
++    pub is_last_visual_line: bool,
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+@@ -85,6 +87,7 @@ pub fn render_text(
+         first_visual_line: false,
+         doc_line: usize::MAX,
+         visual_line: u16::MAX,
++        is_last_visual_line: true,
+     };
+     let mut last_line_end = 0;
+     let mut is_in_indent_area = true;
+@@ -113,6 +116,10 @@ pub fn render_text(
+ 
+         // apply decorations before rendering a new line
+         if grapheme.visual_pos.row as u16 != last_line_pos.visual_line {
++            if last_line_pos.doc_line == grapheme.line_idx {
++                last_line_pos.is_last_visual_line = false;
++            }
++
+             // we initiate doc_line with usize::MAX because no file
+             // can reach that size (memory allocations are limited to isize::MAX)
+             // initially there is no "previous" line (so doc_line is set to usize::MAX)
+@@ -127,6 +134,7 @@ pub fn render_text(
+                 first_visual_line: grapheme.line_idx != last_line_pos.doc_line,
+                 doc_line: grapheme.line_idx,
+                 visual_line: grapheme.visual_pos.row as u16,
++                is_last_visual_line: true,
+             };
+             decorations.decorate_line(renderer, last_line_pos);
+         }
+diff --git a/helix-term/src/ui/editor.rs b/helix-term/src/ui/editor.rs
+index 2c1f97d77..98a1f2464 100644
+--- a/helix-term/src/ui/editor.rs
++++ b/helix-term/src/ui/editor.rs
+@@ -25,7 +25,7 @@
+ use helix_view::{
+     annotations::diagnostics::DiagnosticFilter,
+     document::{Mode, SCRATCH_BUFFER_NAME},
+-    editor::{CompleteAction, CursorShapeConfig},
++    editor::{CompleteAction, CursorShapeConfig, InlineBlameConfig, InlineBlameShow},
+     graphics::{Color, CursorKind, Modifier, Rect, Style},
+     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
+     keyboard::{KeyCode, KeyModifiers},
+@@ -35,6 +35,8 @@
+ 
+ use tui::{buffer::Buffer as Surface, text::Span};
+ 
++use super::text_decorations::blame::InlineBlame;
++
+ pub struct EditorView {
+     pub keymaps: Keymaps,
+     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
+@@ -172,6 +174,7 @@ pub fn render_view(
+         }
+ 
+         Self::render_rulers(editor, doc, view, inner, surface, theme);
++        Self::render_inline_blame(&config.inline_blame, doc, view, &mut decorations, theme);
+ 
+         let primary_cursor = doc
+             .selection(view.id)
+@@ -196,6 +199,7 @@ pub fn render_view(
+             inline_diagnostic_config,
+             config.end_of_line_diagnostics,
+         ));
++
+         render_document(
+             surface,
+             inner,
+@@ -237,6 +241,61 @@ pub fn render_view(
+         statusline::render(&mut context, statusline_area, surface)
+     }
+ 
++    fn render_inline_blame(
++        inline_blame: &InlineBlameConfig,
++        doc: &Document,
++        view: &View,
++        decorations: &mut DecorationManager,
++        theme: &Theme,
++    ) {
++        const INLINE_BLAME_SCOPE: &str = "ui.virtual.inline-blame";
++        let text = doc.text();
++        match inline_blame.show {
++            InlineBlameShow::Never => (),
++            InlineBlameShow::CursorLine => {
++                let cursor_line_idx = doc.cursor_line(view.id);
++
++                // do not render inline blame for empty lines to reduce visual noise
++                if text.line(cursor_line_idx) != doc.line_ending.as_str() {
++                    if let Ok(line_blame) =
++                        doc.line_blame(cursor_line_idx as u32, &inline_blame.format)
++                    {
++                        decorations.add_decoration(InlineBlame::new(
++                            theme.get(INLINE_BLAME_SCOPE),
++                            text_decorations::blame::LineBlame::OneLine((
++                                cursor_line_idx,
++                                line_blame,
++                            )),
++                        ));
++                    };
++                }
++            }
++            InlineBlameShow::AllLines => {
++                let mut blame_lines = vec![None; text.len_lines()];
++
++                let blame_for_all_lines = view.line_range(doc).filter_map(|line_idx| {
++                    // do not render inline blame for empty lines to reduce visual noise
++                    if text.line(line_idx) != doc.line_ending.as_str() {
++                        doc.line_blame(line_idx as u32, &inline_blame.format)
++                            .ok()
++                            .map(|blame| (line_idx, blame))
++                    } else {
++                        None
++                    }
++                });
++
++                for (line_idx, blame) in blame_for_all_lines {
++                    blame_lines[line_idx] = Some(blame);
++                }
++
++                decorations.add_decoration(InlineBlame::new(
++                    theme.get(INLINE_BLAME_SCOPE),
++                    text_decorations::blame::LineBlame::ManyLines(blame_lines),
++                ));
++            }
++        }
++    }
++
+     pub fn render_rulers(
+         editor: &Editor,
+         doc: &Document,
+diff --git a/helix-term/src/ui/text_decorations.rs b/helix-term/src/ui/text_decorations.rs
+index 931ea4311..f9d757ad8 100644
+--- a/helix-term/src/ui/text_decorations.rs
++++ b/helix-term/src/ui/text_decorations.rs
+@@ -8,6 +8,7 @@
+ 
+ pub use diagnostics::InlineDiagnostics;
+ 
++pub mod blame;
+ mod diagnostics;
+ 
+ /// Decorations are the primary mechanism for extending the text rendering.
+diff --git a/helix-term/src/ui/text_decorations/blame.rs b/helix-term/src/ui/text_decorations/blame.rs
+new file mode 100644
+index 000000000..bc048ef46
+--- /dev/null
++++ b/helix-term/src/ui/text_decorations/blame.rs
+@@ -0,0 +1,95 @@
++use helix_core::Position;
++
++use helix_view::theme::Style;
++
++use crate::ui::document::{LinePos, TextRenderer};
++use crate::ui::text_decorations::Decoration;
++
++pub enum LineBlame {
++    OneLine((usize, String)),
++    // Optimization: Use `Vec<T>` insted of `HashMap<usize, T>`
++    // because we know that the amount of lines visible in the viewport X3 cannot be a very large number,
++    // most likely up to a few hundred. In the absolute extreme case, maybe 5,000.
++    ManyLines(Vec<Option<String>>),
++}
++
++pub struct InlineBlame {
++    lines: LineBlame,
++    style: Style,
++}
++
++impl InlineBlame {
++    pub fn new(style: Style, lines: LineBlame) -> Self {
++        InlineBlame { style, lines }
++    }
++}
++
++impl Decoration for InlineBlame {
++    fn render_virt_lines(
++        &mut self,
++        renderer: &mut TextRenderer,
++        pos: LinePos,
++        virt_off: Position,
++    ) -> Position {
++        // Only render inline blame on the last visual line
++        // This prevents it being rendered multiple times per line, if the
++        // line is wrapping.
++        //
++        // We want to render it on the last visual line because unless the user
++        // has `soft-wrap.wrap-at-text-width` enabled, for a document line that wraps
++        // there will only be space to render inline blame at the last doc line
++        if !pos.is_last_visual_line {
++            return Position::new(0, 0);
++        }
++
++        let blame = match &self.lines {
++            LineBlame::OneLine((line, blame)) => {
++                if line == &pos.doc_line {
++                    // do not draw inline blame for lines that have no content in them
++                    blame
++                } else {
++                    return Position::new(0, 0);
++                }
++            }
++            LineBlame::ManyLines(lines) => {
++                if let Some(Some(blame)) = lines.get(pos.doc_line) {
++                    blame
++                } else {
++                    // do not draw inline blame for lines that have no content in them
++                    return Position::new(0, 0);
++                }
++            }
++        };
++
++        // where the line in the document ends
++        let end_of_line = virt_off.col as u16;
++        // length of line in the document
++        // draw the git blame 6 spaces after the end of the line
++        let start_drawing_at = (end_of_line - renderer.offset.col as u16) + 6;
++        let start_drawing_at_virtual = end_of_line + 6;
++
++        let amount_of_characters_drawn = renderer
++            .column_in_bounds(start_drawing_at_virtual as usize, 1)
++            .then(|| {
++                // the column where we stop drawing the blame
++                let stopped_drawing_at = renderer
++                    .set_string_truncated(
++                        renderer.viewport.x + start_drawing_at,
++                        pos.visual_line,
++                        blame,
++                        renderer.viewport.width.saturating_sub(start_drawing_at) as usize,
++                        |_| self.style,
++                        true,
++                        false,
++                    )
++                    .0;
++
++                let line_length = end_of_line - renderer.offset.col as u16;
++
++                stopped_drawing_at - line_length
++            })
++            .unwrap_or(0);
++
++        Position::new(0, amount_of_characters_drawn as usize)
++    }
++}
+diff --git a/helix-vcs/Cargo.toml b/helix-vcs/Cargo.toml
+index e51222a2b..7c75d46ea 100644
+--- a/helix-vcs/Cargo.toml
++++ b/helix-vcs/Cargo.toml
+@@ -12,12 +12,13 @@ homepage.workspace = true
+ [dependencies]
+ helix-core = { path = "../helix-core" }
+ helix-event = { path = "../helix-event" }
++helix-stdx = { path = "../helix-stdx" }
+ 
+ tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "parking_lot", "macros"] }
+ parking_lot.workspace = true
+ arc-swap = { version = "1.7.1" }
+ 
+-gix = { version = "0.73.0", features = ["attributes", "status"], default-features = false, optional = true }
++gix = { version = "0.73.0", features = ["attributes", "status", "blame", "parallel"], default-features = false, optional = true }
+ imara-diff =  "0.2.0"
+ anyhow = "1"
+ 
+diff --git a/helix-vcs/src/diff.rs b/helix-vcs/src/diff.rs
+index cc97ef851..505732581 100644
+--- a/helix-vcs/src/diff.rs
++++ b/helix-vcs/src/diff.rs
+@@ -79,6 +79,13 @@ pub fn load(&self) -> Diff {
+         }
+     }
+ 
++    pub fn try_load(&self) -> Option<Diff> {
++        Some(Diff {
++            diff: self.diff.try_read()?,
++            inverted: self.inverted,
++        })
++    }
++
+     /// Updates the document associated with this redraw handle
+     /// This function is only intended to be called from within the rendering loop
+     /// if called from elsewhere it may fail to acquire the render lock and panic
+diff --git a/helix-vcs/src/git.rs b/helix-vcs/src/git.rs
+index 1be71afac..d1a2b256a 100644
+--- a/helix-vcs/src/git.rs
++++ b/helix-vcs/src/git.rs
+@@ -1,11 +1,11 @@
+ use anyhow::{bail, Context, Result};
+ use arc_swap::ArcSwap;
++use gix::bstr::ByteSlice as _;
+ use gix::filter::plumbing::driver::apply::Delay;
+ use std::io::Read;
+ use std::path::Path;
+ use std::sync::Arc;
+ 
+-use gix::bstr::ByteSlice;
+ use gix::diff::Rewrites;
+ use gix::dir::entry::Status;
+ use gix::objs::tree::EntryKind;
+@@ -22,6 +22,8 @@
+ #[cfg(test)]
+ mod test;
+ 
++pub mod blame;
++
+ #[inline]
+ fn get_repo_dir(file: &Path) -> Result<&Path> {
+     file.parent().context("file has no parent directory")
+diff --git a/helix-vcs/src/git/blame.rs b/helix-vcs/src/git/blame.rs
+new file mode 100644
+index 000000000..63b52a36d
+--- /dev/null
++++ b/helix-vcs/src/git/blame.rs
+@@ -0,0 +1,630 @@
++use anyhow::Context as _;
++use anyhow::Result;
++use parking_lot::Mutex;
++use std::collections::HashMap;
++use std::path::PathBuf;
++
++use super::{get_repo_dir, open_repo};
++
++/// Allows us to save compute resources when requesting blame for the same line
++/// To go from an `ObjectId` (which represents a commit) to `LineBLame`, we have to perform some work.
++///
++/// With this struct, we only do this work once. Getting `LineBlame` for the same line for the 2nd and subsequent
++/// times is going to be free. This is important because we do this step on every render, in the main thread.
++#[derive(Debug)]
++enum LineBlameUnit {
++    /// The raw object id of the commit for a line.
++    /// It will take a bit of compute in order to obtain the `LineBlame` for it.
++    Unprocessed(gix::ObjectId),
++    /// Fully processed line blame information.
++    Processed(LineBlame),
++}
++
++/// Stores information about the blame for a file
++#[derive(Debug)]
++pub struct FileBlame {
++    /// A map from line numbers to blame for that line
++    blame: Mutex<HashMap<u32, LineBlameUnit>>,
++    /// The owning repository for this file's `ObjectId`s
++    repo: gix::ThreadSafeRepository,
++}
++
++impl FileBlame {
++    /// Get the blame information corresponding to a line in the file and diff for that line
++    #[inline]
++    pub fn blame_for_line(&self, line: u32, inserted_lines: u32, removed_lines: u32) -> LineBlame {
++        // Because gix_blame doesn't care about stuff that is not commited, we have to "normalize" the
++        // line number to account for uncommited code.
++        //
++        // You'll notice that blame_line can be 0 when, for instance we have:
++        // - removed 0 lines
++        // - added 10 lines
++        // - cursor_line is 8
++        //
++        // So when our cursor is on the 10th added line or earlier, blame_line will be 0. This means
++        // the blame will be incorrect. But that's fine, because when the cursor_line is on some hunk,
++        // we can show to the user nothing at all. This is detected in the editor
++        let blame_line = line.saturating_sub(inserted_lines) + removed_lines;
++        let repo = self.repo.to_thread_local();
++
++        let mut blame = self.blame.lock();
++        let line_blame_unit = blame.get_mut(&blame_line);
++
++        let commit = match line_blame_unit {
++            // Slow path: This is the first time we're trying to get the blame for this line
++            Some(LineBlameUnit::Unprocessed(object_id)) => repo.find_commit(*object_id).ok(),
++            // Fast path: We've already processed this line before so we don't need to
++            // search all of the repo's commits to compute the blame
++            Some(LineBlameUnit::Processed(line_blame)) => return line_blame.clone(),
++            // This line does not have any blame associated with it
++            None => None,
++        };
++
++        let message = commit.as_ref().and_then(|c| c.message().ok());
++        let author = commit.as_ref().and_then(|c| c.author().ok());
++        let time = author.and_then(|a| a.time.parse::<gix::date::Time>().ok());
++
++        let line_blame = LineBlame {
++            commit_hash: commit
++                .as_ref()
++                .and_then(|c| c.short_id().map(|id| id.to_string()).ok()),
++            author_name: author.map(|a| a.name.to_string()),
++            author_email: author.map(|a| a.email.to_string()),
++            commit_date: time.map(|time| time.format(gix::date::time::format::SHORT)),
++            commit_title: message.as_ref().map(|msg| msg.title.to_string()),
++            commit_body: message
++                .as_ref()
++                .and_then(|msg| msg.body.map(|body| body.to_string())),
++            time_stamp: time.map(|time| (time.seconds, time.offset)),
++            time_ago: None,
++        };
++
++        // we know that `line_blame_unit` here is not processed
++        if let Some(line_blame_unit) = line_blame_unit {
++            *line_blame_unit = LineBlameUnit::Processed(line_blame.clone());
++        };
++
++        line_blame
++    }
++
++    /// Compute blame for this file (expensive)
++    pub fn try_new(file: PathBuf) -> Result<Self> {
++        let thread_safe_repo =
++            open_repo(get_repo_dir(&file)?).context("Failed to open git repo")?;
++        let repo = thread_safe_repo.to_thread_local();
++        let head = repo.head()?.peel_to_commit_in_place()?.id;
++
++        let mut resource_cache = repo.diff_resource_cache_for_tree_diff()?;
++        let file_blame = gix::blame::file(
++            &repo.objects,
++            head,
++            None,
++            &mut resource_cache,
++            // NOTE: bstr always uses unix separators `/`, even on
++            // Windows which uses the `\` separator
++            &gix::path::to_unix_separators_on_windows(gix::path::try_into_bstr(
++                file.strip_prefix(
++                    repo.path()
++                        .parent()
++                        .context("Could not get the parent path of the repo")?,
++                )?,
++            )?),
++            gix::blame::Options::default(),
++        )?
++        .entries;
++
++        Ok(Self {
++            blame: Mutex::new(
++                file_blame
++                    .into_iter()
++                    .flat_map(|blame| {
++                        (blame.start_in_blamed_file..blame.start_in_blamed_file + blame.len.get())
++                            .map(move |i| (i, LineBlameUnit::Unprocessed(blame.commit_id)))
++                    })
++                    .collect(),
++            ),
++            repo: thread_safe_repo,
++        })
++    }
++}
++
++#[derive(Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
++pub struct LineBlame {
++    commit_hash: Option<String>,
++    author_name: Option<String>,
++    author_email: Option<String>,
++    commit_date: Option<String>,
++    commit_title: Option<String>,
++    commit_body: Option<String>,
++    /// Used to compute `time-ago`
++    time_stamp: Option<(i64, i32)>,
++    /// This field is the only one that needs to be re-computed every time
++    /// we request the `LineBlame`. It exists here for lifetime purposes, so we can return
++    /// `&str` from `Self::get_variable`.
++    ///
++    /// This should only be set from within and never initialized.
++    time_ago: Option<String>,
++}
++
++impl LineBlame {
++    /// Longest variable is: `time-ago` (and `message`)
++    // this is just to reduce allocation by a little bit by specifying the max size we would expect a
++    // variable to be up-front. This function is called every render.
++    const LONGEST_VARIABLE_LENGTH: usize = 7;
++
++    /// # Returns
++    ///
++    /// None => Invalid variable
++    /// Some(None) => Valid variable, but is empty
++    #[inline]
++    fn get_variable(&mut self, var: &str) -> Option<Option<&str>> {
++        Some(
++            // if adding new variables, update `Self::LONGEST_VARIABLE_LENGTH`
++            match var {
++                "commit" => &self.commit_hash,
++                "author" => &self.author_name,
++                "date" => &self.commit_date,
++                "title" => &self.commit_title,
++                "email" => &self.author_email,
++                "body" => &self.commit_body,
++                "time-ago" => {
++                    let time_ago = self.time_stamp.map(|(utc_seconds, timezone_offset)| {
++                        helix_stdx::time::format_relative_time(utc_seconds, timezone_offset)
++                    });
++                    self.time_ago = time_ago;
++                    &self.time_ago
++                }
++                _ => return None,
++            }
++            .as_deref(),
++        )
++    }
++
++    /// Parse the user's blame format
++    #[inline]
++    pub fn parse_format(&mut self, format: &str) -> String {
++        let mut line_blame = String::new();
++        let mut content_before_variable = String::with_capacity(format.len());
++
++        let mut chars = format.char_indices().peekable();
++        // in all cases, when any of the variables is empty we exclude the content before the variable
++        // However, if the variable is the first and it is empty - then exclude the content after the variable
++        let mut exclude_content_after_variable = false;
++        while let Some((ch_idx, ch)) = chars.next() {
++            if ch == '{' {
++                let mut variable = String::with_capacity(Self::LONGEST_VARIABLE_LENGTH);
++                // eat all characters until the end
++                while let Some((_, ch)) = chars.next_if(|(_, ch)| *ch != '}') {
++                    variable.push(ch);
++                }
++                // eat the '}' if it was found
++                let has_closing = chars.next().is_some();
++
++                #[derive(PartialEq, Eq, PartialOrd, Ord)]
++                enum Variable<'a> {
++                    Valid(&'a str),
++                    Invalid(&'a str),
++                    Empty,
++                }
++
++                let variable_value = self.get_variable(&variable).map_or_else(
++                    || {
++                        // Invalid variable. So just add whatever we parsed before.
++                        // The length of the variable, including opening and optionally
++                        // closing curly braces
++                        let variable_len = 1 + variable.len() + has_closing as usize;
++
++                        Variable::Invalid(&format[ch_idx..ch_idx + variable_len])
++                    },
++                    |s| s.map(Variable::Valid).unwrap_or(Variable::Empty),
++                );
++
++                match variable_value {
++                    Variable::Invalid(value) | Variable::Valid(value) => {
++                        if exclude_content_after_variable {
++                            // don't push anything.
++                            exclude_content_after_variable = false;
++                        } else {
++                            line_blame.push_str(&content_before_variable);
++                        }
++                        line_blame.push_str(value);
++                    }
++                    Variable::Empty => {
++                        if line_blame.is_empty() {
++                            // exclude content AFTER this variable (at next iteration of the loop,
++                            // we'll exclude the content before a valid variable)
++                            exclude_content_after_variable = true;
++                        } else {
++                            // exclude content BEFORE this variable
++                            // also just don't add anything.
++                        }
++                    }
++                }
++
++                // we've consumed the content before the variable so just get rid of it and
++                // make space for new
++                content_before_variable.drain(..);
++            } else {
++                content_before_variable.push(ch);
++            }
++        }
++
++        line_blame
++    }
++}
++
++#[cfg(test)]
++mod test {
++    use super::*;
++    use crate::git::test::create_commit_with_message;
++    use crate::git::test::empty_git_repo;
++    use std::fs::File;
++
++    /// describes how a line was modified
++    #[derive(PartialEq, PartialOrd, Ord, Eq)]
++    enum LineDiff {
++        /// this line is added
++        Insert,
++        /// this line is deleted
++        Delete,
++        /// no changes for this line
++        None,
++    }
++
++    /// checks if the first argument is `no_commit` or not
++    macro_rules! no_commit_flag {
++        (no_commit, $commit_msg:literal) => {
++            false
++        };
++        (, $commit_msg:literal) => {
++            true
++        };
++        ($any:tt, $commit_msg:literal) => {
++            compile_error!(concat!(
++                "expected `no_commit` or nothing for commit ",
++                $commit_msg
++            ))
++        };
++    }
++
++    /// checks if the first argument is `insert` or `delete`
++    macro_rules! line_diff_flag {
++        (insert, $commit_msg:literal, $line:expr) => {
++            LineDiff::Insert
++        };
++        (delete, $commit_msg:literal, $line:expr) => {
++            LineDiff::Delete
++        };
++        (, $commit_msg:literal, $line:expr) => {
++            LineDiff::None
++        };
++        ($any:tt, $commit_msg:literal, $line:expr) => {
++            compile_error!(concat!(
++                "expected `insert`, `delete` or nothing for commit ",
++                $commit_msg,
++                " line ",
++                $line
++            ))
++        };
++    }
++
++    /// This macro exists because we can't pass a `match` statement into `concat!`
++    /// we would like to exclude any lines that are `delete`
++    macro_rules! line_diff_flag_str {
++        (insert, $commit_msg:literal, $line:expr) => {
++            concat!($line, newline_literal!())
++        };
++        (delete, $commit_msg:literal, $line:expr) => {
++            ""
++        };
++        (, $commit_msg:literal, $line:expr) => {
++            concat!($line, newline_literal!())
++        };
++        ($any:tt, $commit_msg:literal, $line:expr) => {
++            compile_error!(concat!(
++                "expected `insert`, `delete` or nothing for commit ",
++                $commit_msg,
++                " line ",
++                $line
++            ))
++        };
++    }
++
++    #[cfg(windows)]
++    macro_rules! newline_literal {
++        () => {
++            "\r\n"
++        };
++    }
++    #[cfg(not(windows))]
++    macro_rules! newline_literal {
++        () => {
++            "\n"
++        };
++    }
++
++    /// Helper macro to create a history of the same file being modified.
++    macro_rules! assert_line_blame_progress {
++        (
++            $(
++                // a unique identifier for the commit, other commits must not use this
++                // If `no_commit` option is used, use the identifier of the previous commit
++                $commit_msg:literal
++                // must be `no_commit` if exists.
++                // If exists, this block won't be committed
++                $($no_commit:ident)? =>
++                $(
++                    // contents of a line in the file
++                    $line:literal
++                    // what commit identifier we are expecting for this line
++                    $($expected:literal)?
++                    // must be `insert` or `delete` if exists
++                    // if exists, must be used with `no_commit`
++                    // - `insert`: this line is added
++                    // - `delete`: this line is deleted
++                    $($line_diff:ident)?
++                ),+
++            );+
++            $(;)?
++        ) => {{
++            use std::fs::OpenOptions;
++            use std::io::Write;
++
++            let repo = empty_git_repo();
++            let file = repo.path().join("file.txt");
++            File::create(&file).expect("could not create file");
++
++            $(
++                let file_content = concat!(
++                    $(
++                        line_diff_flag_str!($($line_diff)?, $commit_msg, $line),
++                    )*
++                );
++                eprintln!("at commit {}:\n\n{file_content}", stringify!($commit_msg));
++
++                let mut f = OpenOptions::new()
++                    .write(true)
++                    .truncate(true)
++                    .open(&file)
++                    .unwrap();
++
++                f.write_all(file_content.as_bytes()).unwrap();
++
++                let should_commit = no_commit_flag!($($no_commit)?, $commit_msg);
++                if should_commit {
++                    create_commit_with_message(repo.path(), true, stringify!($commit_msg));
++                }
++
++                let mut line_number = 0;
++                let mut added_lines = 0;
++                let mut removed_lines = 0;
++
++                $(
++                    let line_diff_flag = line_diff_flag!($($line_diff)?, $commit_msg, $line);
++                    #[allow(unused_assignments)]
++                    match line_diff_flag {
++                        LineDiff::Insert => added_lines += 1,
++                        LineDiff::Delete => removed_lines += 1,
++                        LineDiff::None => ()
++                    }
++                    // completely skip lines that are marked as `delete`
++                    if line_diff_flag != LineDiff::Delete {
++                        // if there is no $expected, then we don't care what blame_line returns
++                        // because we won't show it to the user.
++                        $(
++                            let blame_result =
++                                FileBlame::try_new(file.clone())
++                                    .unwrap()
++                                    .blame_for_line(line_number, added_lines, removed_lines)
++                                    .commit_title;
++
++                            assert_eq!(
++                                blame_result,
++                                Some(concat!(stringify!($expected), newline_literal!()).to_owned()),
++                                "Blame mismatch\nat commit: {}\nat line: {}\nline contents: {}\nexpected commit: {}\nbut got commit: {}",
++                                $commit_msg,
++                                line_number,
++                                file_content
++                                    .lines()
++                                    .nth(line_number.try_into().unwrap())
++                                    .unwrap(),
++                                stringify!($expected),
++                                blame_result
++                                    .as_ref()
++                                    .map(|blame| blame.trim_end())
++                                    .unwrap_or("<no commit>")
++                            );
++                        )?
++                        #[allow(unused_assignments)]
++                        {
++                            line_number += 1;
++                        }
++                    }
++                )*
++            )*
++        }};
++    }
++
++    // For some reasons the CI is failing on windows with the message "Commits not found".
++    // The created temporary repository has no commits... But this is not an issue on unix.
++    // There is nothing platform-specific in this implementation. This is a problem only
++    // for tests on Windows.
++    // As such it should be fine to disable this test in Windows.
++    // As long as these tests pass on other platforms, on Windows it will work too.
++    #[cfg(not(windows))]
++    #[test]
++    pub fn blamed_lines() {
++        assert_line_blame_progress! {
++            // initialize
++            1 =>
++                "fn main() {" 1,
++                "" 1,
++                "}" 1;
++            // modifying a line works
++            2 =>
++                "fn main() {" 1,
++                "  one" 2,
++                "}" 1;
++            // inserting a line works
++            3 =>
++                "fn main() {" 1,
++                "  one" 2,
++                "  two" 3,
++                "}" 1;
++            // deleting a line works
++            4 =>
++                "fn main() {" 1,
++                "  two" 3,
++                "}" 1;
++            // when a line is inserted in-between the blame order is preserved
++            4 no_commit =>
++                "fn main() {" 1,
++                "  hello world" insert,
++                "  two" 3,
++                "}" 1;
++            // Having a bunch of random lines interspersed should not change which lines
++            // have blame for which commits
++            4 no_commit =>
++                "  six" insert,
++                "  three" insert,
++                "fn main() {" 1,
++                "  five" insert,
++                "  four" insert,
++                "  two" 3,
++                "  five" insert,
++                "  four" insert,
++                "}" 1,
++                "  five" insert,
++                "  four" insert;
++            // committing all of those insertions should recognize that they are
++            // from the current commit, while still keeping the information about
++            // previous commits
++            5 =>
++                "  six" 5,
++                "  three" 5,
++                "fn main() {" 1,
++                "  five" 5,
++                "  four" 5,
++                "  two" 3,
++                "  five" 5,
++                "  four" 5,
++                "}" 1,
++                "  five" 5,
++                "  four" 5;
++            // several lines deleted
++            5 no_commit =>
++                "  six" 5,
++                "  three" 5,
++                "fn main() {" delete,
++                "  five" delete,
++                "  four" delete,
++                "  two" delete,
++                "  five" delete,
++                "  four" 5,
++                "}" 1,
++                "  five" 5,
++                "  four" 5;
++            // committing the deleted changes
++            6 =>
++                "  six" 5,
++                "  three" 5,
++                "  four" 5,
++                "}" 1,
++                "  five" 5,
++                "  four" 5;
++            // mixing inserts with deletes
++            6 no_commit =>
++                "  six" delete,
++                "  2" insert,
++                "  three" delete,
++                "  four" 5,
++                "  1" insert,
++                "}" 1,
++                "]" insert,
++                "  five" delete,
++                "  four" 5;
++            // committing inserts and deletes
++            7 =>
++                "  2" 7,
++                "  four" 5,
++                "  1" 7,
++                "}" 1,
++                "]" 7,
++                "  four" 5;
++        };
++    }
++
++    fn bob() -> LineBlame {
++        LineBlame {
++            commit_hash: Some("f14ab1cf".to_owned()),
++            author_name: Some("Bob TheBuilder".to_owned()),
++            author_email: Some("bob@bob.com".to_owned()),
++            commit_date: Some("2028-01-10".to_owned()),
++            commit_title: Some("feat!: extend house".to_owned()),
++            commit_body: Some("BREAKING CHANGE: Removed door".to_owned()),
++            time_stamp: None,
++            time_ago: None,
++        }
++    }
++
++    #[test]
++    pub fn inline_blame_format_parser() {
++        let format = "{author}, {date} • {title} • {commit}";
++
++        assert_eq!(
++            bob().parse_format(format),
++            "Bob TheBuilder, 2028-01-10 • feat!: extend house • f14ab1cf".to_owned()
++        );
++        assert_eq!(
++            LineBlame {
++                author_name: None,
++                ..bob()
++            }
++            .parse_format(format),
++            "2028-01-10 • feat!: extend house • f14ab1cf".to_owned()
++        );
++        assert_eq!(
++            LineBlame {
++                commit_date: None,
++                ..bob()
++            }
++            .parse_format(format),
++            "Bob TheBuilder • feat!: extend house • f14ab1cf".to_owned()
++        );
++        assert_eq!(
++            LineBlame {
++                commit_title: None,
++                author_email: None,
++                ..bob()
++            }
++            .parse_format(format),
++            "Bob TheBuilder, 2028-01-10 • f14ab1cf".to_owned()
++        );
++        assert_eq!(
++            LineBlame {
++                commit_hash: None,
++                ..bob()
++            }
++            .parse_format(format),
++            "Bob TheBuilder, 2028-01-10 • feat!: extend house".to_owned()
++        );
++        assert_eq!(
++            LineBlame {
++                commit_date: None,
++                author_name: None,
++                ..bob()
++            }
++            .parse_format(format),
++            "feat!: extend house • f14ab1cf".to_owned()
++        );
++        assert_eq!(
++            LineBlame {
++                author_name: None,
++                commit_title: None,
++                ..bob()
++            }
++            .parse_format(format),
++            "2028-01-10 • f14ab1cf".to_owned()
++        );
++    }
++}
+diff --git a/helix-vcs/src/git/test.rs b/helix-vcs/src/git/test.rs
+index 164040f50..c758c80b0 100644
+--- a/helix-vcs/src/git/test.rs
++++ b/helix-vcs/src/git/test.rs
+@@ -4,11 +4,11 @@
+ 
+ use crate::git;
+ 
+-fn exec_git_cmd(args: &str, git_dir: &Path) {
++pub fn exec_git_cmd(args: &[&str], git_dir: &Path) {
+     let res = Command::new("git")
+         .arg("-C")
+         .arg(git_dir) // execute the git command in this directory
+-        .args(args.split_whitespace())
++        .args(args)
+         .env_remove("GIT_DIR")
+         .env_remove("GIT_ASKPASS")
+         .env_remove("SSH_ASKPASS")
+@@ -25,26 +25,30 @@ fn exec_git_cmd(args: &str, git_dir: &Path) {
+         .env("GIT_CONFIG_KEY_1", "init.defaultBranch")
+         .env("GIT_CONFIG_VALUE_1", "main")
+         .output()
+-        .unwrap_or_else(|_| panic!("`git {args}` failed"));
++        .unwrap_or_else(|_| panic!("`git {args:?}` failed"));
+     if !res.status.success() {
+         println!("{}", String::from_utf8_lossy(&res.stdout));
+         eprintln!("{}", String::from_utf8_lossy(&res.stderr));
+-        panic!("`git {args}` failed (see output above)")
++        panic!("`git {args:?}` failed (see output above)")
+     }
+ }
+ 
+-fn create_commit(repo: &Path, add_modified: bool) {
++pub fn create_commit(repo: &Path, add_modified: bool) {
++    create_commit_with_message(repo, add_modified, "commit")
++}
++
++pub fn create_commit_with_message(repo: &Path, add_modified: bool, message: &str) {
+     if add_modified {
+-        exec_git_cmd("add -A", repo);
++        exec_git_cmd(&["add", "-A"], repo);
+     }
+-    exec_git_cmd("commit -m message", repo);
++    exec_git_cmd(&["commit", "-m", message], repo);
+ }
+ 
+-fn empty_git_repo() -> TempDir {
++pub fn empty_git_repo() -> TempDir {
+     let tmp = tempfile::tempdir().expect("create temp dir for git testing");
+-    exec_git_cmd("init", tmp.path());
+-    exec_git_cmd("config user.email test@helix.org", tmp.path());
+-    exec_git_cmd("config user.name helix-test", tmp.path());
++    exec_git_cmd(&["init"], tmp.path());
++    exec_git_cmd(&["config", "user.email", "test@helix.org"], tmp.path());
++    exec_git_cmd(&["config", "user.name", "helix-test"], tmp.path());
+     tmp
+ }
+ 
+diff --git a/helix-vcs/src/lib.rs b/helix-vcs/src/lib.rs
+index 4c5f2036a..cac5ee939 100644
+--- a/helix-vcs/src/lib.rs
++++ b/helix-vcs/src/lib.rs
+@@ -11,6 +11,7 @@
+ 
+ #[cfg(feature = "git")]
+ mod git;
++pub use git::blame::FileBlame;
+ 
+ mod diff;
+ 
+@@ -22,7 +23,7 @@
+ 
+ /// Contains all active diff providers. Diff providers are compiled in via features. Currently
+ /// only `git` is supported.
+-#[derive(Clone)]
++#[derive(Clone, Debug)]
+ pub struct DiffProviderRegistry {
+     providers: Vec<DiffProvider>,
+ }
+@@ -94,8 +95,8 @@ fn default() -> Self {
+ /// cloning [DiffProviderRegistry] as `Clone` cannot be used in trait objects.
+ ///
+ /// `Copy` is simply to ensure the `clone()` call is the simplest it can be.
+-#[derive(Copy, Clone)]
+-enum DiffProvider {
++#[derive(Copy, Clone, Debug)]
++pub enum DiffProvider {
+     #[cfg(feature = "git")]
+     Git,
+     None,
+diff --git a/helix-view/src/document.rs b/helix-view/src/document.rs
+index 04b7703c5..a38353ffc 100644
+--- a/helix-view/src/document.rs
++++ b/helix-view/src/document.rs
+@@ -198,6 +198,10 @@ pub struct Document {
+ 
+     diff_handle: Option<DiffHandle>,
+     version_control_head: Option<Arc<ArcSwap<Box<str>>>>,
++    /// Contains blame information for each line in the file
++    /// We store the Result because when we access the blame manually we want to log the error
++    /// But if it is in the background we are just going to ignore the error
++    pub file_blame: Option<anyhow::Result<helix_vcs::FileBlame>>,
+ 
+     // when document was used for most-recent-used buffer picker
+     pub focused_at: std::time::Instant,
+@@ -209,7 +213,8 @@ pub struct Document {
+     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
+     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
+     pub color_swatch_controller: TaskController,
+-
++    /// When fetching blame on-demand, if this field is `true` we request the blame for this document again
++    pub is_blame_potentially_out_of_date: bool,
+     // NOTE: this field should eventually go away - we should use the Editor's syn_loader instead
+     // of storing a copy on every doc. Then we can remove the surrounding `Arc` and use the
+     // `ArcSwap` directly.
+@@ -290,6 +295,16 @@ pub struct DocumentInlayHintsId {
+     pub last_line: usize,
+ }
+ 
++#[derive(Debug, thiserror::Error)]
++pub enum LineBlameError<'a> {
++    #[error("Not committed yet")]
++    NotCommittedYet,
++    #[error("Unable to get blame for line {0}: {1}")]
++    NoFileBlame(u32, &'a anyhow::Error),
++    #[error("The blame for this file is not ready yet. Try again in a few seconds")]
++    NotReadyYet,
++}
++
+ use std::{fmt, mem};
+ impl fmt::Debug for Document {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+@@ -727,10 +742,20 @@ pub fn from(
+             jump_labels: HashMap::new(),
+             color_swatches: None,
+             color_swatch_controller: TaskController::new(),
++            file_blame: None,
++            is_blame_potentially_out_of_date: false,
+             syn_loader,
+         }
+     }
+ 
++    pub fn should_request_full_file_blame(&mut self, auto_fetch: bool) -> bool {
++        if auto_fetch {
++            true
++        } else {
++            self.is_blame_potentially_out_of_date
++        }
++    }
++
+     pub fn default(
+         config: Arc<dyn DynAccess<Config>>,
+         syn_loader: Arc<ArcSwap<syntax::Loader>>,
+@@ -1342,6 +1367,13 @@ pub fn origin(&self) -> Range {
+         Range::new(0, 1).grapheme_aligned(self.text().slice(..))
+     }
+ 
++    /// Get the line of cursor for the primary selection
++    pub fn cursor_line(&self, view_id: ViewId) -> usize {
++        let text = self.text();
++        let selection = self.selection(view_id);
++        text.char_to_line(selection.primary().cursor(text.slice(..)))
++    }
++
+     /// Reset the view's selection on this document to the
+     /// [origin](Document::origin) cursor.
+     pub fn reset_selection(&mut self, view_id: ViewId) {
+@@ -1573,6 +1605,60 @@ pub fn apply(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
+         self.apply_inner(transaction, view_id, true)
+     }
+ 
++    /// Get the line blame for this view
++    pub fn line_blame(&self, cursor_line: u32, format: &str) -> Result<String, LineBlameError> {
++        // how many lines were inserted and deleted before the cursor line
++        let (inserted_lines, deleted_lines) = self
++            .diff_handle()
++            .map_or(
++                // in theory there can be situations where we don't have the diff for a file
++                // but we have the blame. In this case, we can just act like there is no diff
++                Some((0, 0)),
++                |diff_handle| {
++                    // Compute the amount of lines inserted and deleted before the `line`
++                    // This information is needed to accurately transform the state of the
++                    // file in the file system into what gix::blame knows about (gix::blame only
++                    // knows about commit history, it does not know about uncommitted changes)
++                    diff_handle
++                        .try_load()?
++                        .hunks_intersecting_line_ranges(std::iter::once((0, cursor_line as usize)))
++                        .try_fold(
++                            (0, 0),
++                            |(total_inserted_lines, total_deleted_lines), hunk| {
++                                // check if the line intersects the hunk's `after` (which represents
++                                // inserted lines)
++                                (hunk.after.start > cursor_line || hunk.after.end <= cursor_line)
++                                    .then_some((
++                                        total_inserted_lines + (hunk.after.end - hunk.after.start),
++                                        total_deleted_lines + (hunk.before.end - hunk.before.start),
++                                    ))
++                            },
++                        )
++                },
++            )
++            .ok_or(LineBlameError::NotCommittedYet)?;
++
++        let file_blame = match &self.file_blame {
++            None => return Err(LineBlameError::NotReadyYet),
++            Some(result) => match result {
++                Err(err) => {
++                    return Err(LineBlameError::NoFileBlame(
++                        // convert 0-based line into 1-based line
++                        cursor_line.saturating_add(1),
++                        err,
++                    ));
++                }
++                Ok(file_blame) => file_blame,
++            },
++        };
++
++        let line_blame = file_blame
++            .blame_for_line(cursor_line, inserted_lines, deleted_lines)
++            .parse_format(format);
++
++        Ok(line_blame)
++    }
++
+     /// Apply a [`Transaction`] to the [`Document`] to change its text
+     /// without notifying the language servers. This is useful for temporary transactions
+     /// that must not influence the server.
+diff --git a/helix-view/src/editor.rs b/helix-view/src/editor.rs
+index 72dc115a7..2fc3b5fbf 100644
+--- a/helix-view/src/editor.rs
++++ b/helix-view/src/editor.rs
+@@ -174,6 +174,40 @@ fn default() -> Self {
+     }
+ }
+ 
++#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum InlineBlameShow {
++    /// Do not show inline blame, and do not request it in the background
++    ///
++    /// When manually requesting the inline blame, it may take several seconds to appear.
++    Never,
++    /// Show the inline blame on the cursor line
++    CursorLine,
++    /// Show the inline blame on every other line
++    AllLines,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
++pub struct InlineBlameConfig {
++    /// How to show the inline blame
++    pub show: InlineBlameShow,
++    /// Whether the inline blame should be fetched in the background
++    pub auto_fetch: bool,
++    /// How the inline blame should look like and the information it includes
++    pub format: String,
++}
++
++impl Default for InlineBlameConfig {
++    fn default() -> Self {
++        Self {
++            show: InlineBlameShow::Never,
++            format: "{author}, {time-ago} • {title} • {commit}".to_owned(),
++            auto_fetch: false,
++        }
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+ pub struct FilePickerConfig {
+@@ -381,6 +415,8 @@ pub struct Config {
+     pub editor_config: bool,
+     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
+     pub rainbow_brackets: bool,
++    /// Inline blame allows showing the latest commit that affected the line the cursor is on as virtual text
++    pub inline_blame: InlineBlameConfig,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq, PartialOrd, Ord)]
+@@ -1061,6 +1097,7 @@ fn default() -> Self {
+             inline_diagnostics: InlineDiagnosticsConfig::default(),
+             end_of_line_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
+             clipboard_provider: ClipboardProvider::default(),
++            inline_blame: InlineBlameConfig::default(),
+             editor_config: true,
+             rainbow_brackets: false,
+         }
+@@ -1850,11 +1887,13 @@ pub fn open(&mut self, path: &Path, action: Action) -> Result<DocumentId, Docume
+             doc.set_version_control_head(self.diff_providers.get_current_head_name(&path));
+ 
+             let id = self.new_document(doc);
++
+             self.launch_language_servers(id);
+ 
+             helix_event::dispatch(DocumentDidOpen {
+                 editor: self,
+                 doc: id,
++                path: &path,
+             });
+ 
+             id
+diff --git a/helix-view/src/events.rs b/helix-view/src/events.rs
+index 0435e6a47..4b28c61ff 100644
+--- a/helix-view/src/events.rs
++++ b/helix-view/src/events.rs
+@@ -7,7 +7,8 @@
+ events! {
+     DocumentDidOpen<'a> {
+         editor: &'a mut Editor,
+-        doc: DocumentId
++        doc: DocumentId,
++        path: &'a std::path::PathBuf
+     }
+     DocumentDidChange<'a> {
+         doc: &'a mut Document,
+@@ -16,6 +17,10 @@
+         changes: &'a ChangeSet,
+         ghost_transaction: bool
+     }
++    EditorConfigDidChange<'a> {
++        old_config: &'a Config,
++        editor: &'a mut Editor
++    }
+     DocumentDidClose<'a> {
+         editor: &'a mut Editor,
+         doc: Document
+diff --git a/helix-view/src/handlers.rs b/helix-view/src/handlers.rs
+index 6aba17d6d..c92e449f5 100644
+--- a/helix-view/src/handlers.rs
++++ b/helix-view/src/handlers.rs
+@@ -17,6 +17,17 @@ pub enum AutoSaveEvent {
+     LeftInsertMode,
+ }
+ 
++#[derive(Debug)]
++pub struct BlameEvent {
++    /// The path for which we request blame
++    pub path: std::path::PathBuf,
++    /// Document for which the blame is requested
++    pub doc_id: DocumentId,
++    /// If this field is set, when we obtain the blame for the file we will
++    /// show blame for this line in the status line
++    pub line: Option<u32>,
++}
++
+ pub struct Handlers {
+     // only public because most of the actual implementation is in helix-term right now :/
+     pub completions: CompletionHandler,
+@@ -24,6 +35,7 @@ pub struct Handlers {
+     pub auto_save: Sender<AutoSaveEvent>,
+     pub document_colors: Sender<lsp::DocumentColorsEvent>,
+     pub word_index: word_index::Handler,
++    pub blame: Sender<BlameEvent>,
+ }
+ 
+ impl Handlers {
+diff --git a/helix-view/src/view.rs b/helix-view/src/view.rs
+index aecf09a61..bf25a78b1 100644
+--- a/helix-view/src/view.rs
++++ b/helix-view/src/view.rs
+@@ -189,6 +189,18 @@ pub fn add_to_history(&mut self, id: DocumentId) {
+         self.docs_access_history.push(id);
+     }
+ 
++    /// The range of lines in the document that the view sees
++    pub fn line_range(&self, doc: &Document) -> std::ops::Range<usize> {
++        let text = doc.text();
++        let text_line_count = text.len_lines();
++        let first_line = text.char_to_line(doc.view_offset(self.id).anchor.min(text.len_chars()));
++        let last_line = first_line
++            .saturating_add(self.inner_height())
++            .min(text_line_count);
++
++        first_line..last_line
++    }
++
+     pub fn inner_area(&self, doc: &Document) -> Rect {
+         self.area.clip_left(self.gutter_offset(doc)).clip_bottom(1) // -1 for statusline
+     }
+-- 
+2.50.1
+
